@@ -321,21 +321,19 @@ def _ask_groq(evidence):
 
 
 def _ask_ollama(evidence):
-    base = config(
-        "OLLAMA_BASE_URL",
-        default="http://localhost:11434",
-    ).rstrip("/")
+    base = config("OLLAMA_BASE_URL", default="https://ollama.com").rstrip("/")
+    api_key = config("OLLAMA_API_KEY", default="").strip()
 
-    model = config("OLLAMA_MODEL", default="llama3.2:3b")
+    if not api_key:
+        raise RuntimeError("OLLAMA_API_KEY is not configured in Render.")
+
+    model = config("OLLAMA_MODEL", default="gpt-oss:120b")
 
     body = {
         "model": model,
         "stream": False,
         "format": "json",
-        "options": {
-            "num_predict": 700,
-            "temperature": 0.2,
-        },
+        "options": {"num_predict": 700, "temperature": 0.2},
         "messages": [
             {
                 "role": "system",
@@ -343,18 +341,16 @@ def _ask_ollama(evidence):
                     "You are GreenTrack ESG data quality analyst. Return "
                     "only JSON with keys summary, insights [{title,detail}], "
                     "recommendations [{priority,title,evidence,action}], "
-                    "and data_quality_notes [string]. Ground every claim "
-                    "in evidence. Do not invent emissions or tCO2e. Do not "
-                    "add unlike units. Flags need review and are not proof "
-                    "of error."
+                    "and data_quality_notes [string]. Ground claims in evidence. "
+                    "Do not invent emissions or tCO2e. Do not add unlike units. "
+                    "Flags need review and are not proof of error."
                 ),
             },
             {
                 "role": "user",
                 "content": (
-                    "Analyze activity records, ingestion runs, and audit "
-                    "events. Give clear, concise, actionable recommendations. "
-                    "Evidence JSON:\n"
+                    "Analyze activity records, ingestion runs, and audit events. "
+                    "Give clear, concise, actionable recommendations. Evidence JSON:\n"
                     + json.dumps(evidence, default=str)[:90000]
                 ),
             },
@@ -364,16 +360,19 @@ def _ask_ollama(evidence):
     req = urllib.request.Request(
         base + "/api/chat",
         data=json.dumps(body).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
         method="POST",
     )
 
-    with urllib.request.urlopen(req, timeout=35) as response:
+    with urllib.request.urlopen(req, timeout=60) as response:
         data = json.loads(response.read().decode("utf-8"))
 
     content = data.get("message", {}).get("content", "")
     if not content:
-        raise RuntimeError("Ollama returned an empty response.")
+        raise RuntimeError("Ollama Cloud returned an empty response.")
 
     parsed = json.loads(content)
     parsed["provider"] = f"ollama:{model}"
