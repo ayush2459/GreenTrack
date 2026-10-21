@@ -29,7 +29,9 @@ def parse_sap_flat_file(content,config=None):
     for i,row in enumerate(reader):
         try:
             n={col_map.get((k or '').strip(),(k or '').strip().lower()): (v or '').strip() for k,v in row.items()};qty=_dec(n.get('quantity','0'))
-            if qty<=0: continue
+            if qty<=0:
+                errors.append({'row': i+2, 'error': 'Missing or non-positive Quantity/Menge; check column headers and values.', 'raw': dict(row)})
+                continue
             unit=n.get('unit','L').upper();plant=n.get('plant_code','');pi=plant_lookup.get(plant,{});gl=n.get('gl_account','');cat=gl_map.get(gl,'PROCUREMENT');d=_date(n.get('posting_date',''));u='L' if 'FUEL' in cat else 'KWH' if cat=='ELECTRICITY' else 'KG'
             results.append({'row_ref':f'row_{i+2}','raw':dict(row),'category':cat,'activity_value':qty,'activity_unit':u,'original_value':qty,'original_unit':unit,'period_start':d,'period_end':d,'facility':pi.get('name',plant),'country_code':pi.get('country',''),'currency':n.get('currency','EUR'),'description':n.get('description','')})
         except Exception as e:errors.append({'row':i+2,'error':str(e),'raw':dict(row)})
@@ -67,3 +69,95 @@ def parse_travel_csv(content,config=None):
                 results.append({'row_ref':f'row_{i+2}_ground_{i}','raw':dict(row),'category':'BUSINESS_TRAVEL','activity_value':dist,'activity_unit':'KM','original_value':dist,'original_unit':'KM','period_start':td,'period_end':td,'facility':row.get('City',''),'country_code':'','currency':row.get('Currency','GBP'),'description':f'Ground ({et})','supplier':row.get('Merchant','')})
         except Exception as e:errors.append({'row':i+2,'error':str(e),'raw':dict(row)})
     return results,errors
+
+def parse_general_esg_csv(content, config=None):
+    # Parse the general ESG CSV schema and retain rows that need review.
+    config = config or {}
+    results, errors = [], []
+    try:
+        text = content.decode('utf-8-sig')
+    except UnicodeDecodeError:
+        text = content.decode('latin-1')
+    reader = csv.DictReader(io.StringIO(text))
+    required = {'record_date', 'scope', 'category', 'activity_amount', 'activity_unit', 'emissions_kg_co2e'}
+    headers = {str(h or '').strip().lower() for h in (reader.fieldnames or [])}
+    missing = sorted(required - headers)
+    if missing:
+        return [], [{'row': 1, 'error': 'Missing required columns: ' + ', '.join(missing),
+                     'raw': {'headers': reader.fieldnames or []}}]
+    category_map = {
+        'stationary combustion': 'FUEL_STATIONARY',
+        'mobile combustion': 'FUEL_MOBILE',
+        'purchased electricity': 'ELECTRICITY',
+        'purchased heat': 'HEAT_STEAM',
+        'purchased steam': 'HEAT_STEAM',
+        'business travel': 'BUSINESS_TRAVEL',
+        'employee commuting': 'BUSINESS_TRAVEL',
+        'purchased goods': 'PROCUREMENT',
+        'purchased goods & services': 'PROCUREMENT',
+        'freight': 'FREIGHT',
+        'upstream transportation': 'FREIGHT',
+        'refrigerant leakage': 'REFRIGERANT_LEAKAGE',
+    }
+    for i, raw_row in enumerate(reader, start=2):
+        try:
+            row = {str(k or '').strip().lower(): (v or '').strip() for k, v in raw_row.items()}
+            label = row.get('category', '').lower()
+            category = category_map.get(label)
+            if not category:
+                if 'electric' in label:
+                    category = 'ELECTRICITY'
+                elif 'refrigerant' in label:
+                    category = 'REFRIGERANT_LEAKAGE'
+                elif any(x in label for x in ('stationary', 'natural gas', 'boiler')):
+                    category = 'FUEL_STATIONARY'
+                elif any(x in label for x in ('mobile', 'vehicle')):
+                    category = 'FUEL_MOBILE'
+                elif any(x in label for x in ('travel', 'commut', 'flight')):
+                    category = 'BUSINESS_TRAVEL'
+                elif any(x in label for x in ('purchas', 'paper')):
+                    category = 'PROCUREMENT'
+                elif any(x in label for x in ('freight', 'transport')):
+                    category = 'FREIGHT'
+                else:
+                    raise ValueError(f"Unsupported category: {row.get('category', '')}")
+            amount = _dec(row.get('activity_amount', ''))
+            reported = _dec(row.get('emissions_kg_co2e', ''))
+            if not row.get('record_date'):
+                raise ValueError('record_date is required')
+            d = _date(row['record_date'])
+            period = row.get('reporting_period', '')
+            warnings = []
+            if amount <= 0:
+                warnings.append('Zero or negative activity amount; verify source data')
+            if period and '-Q' in period.upper():
+                try:
+                    quarter = int(period.upper().split('-Q')[-1])
+                    if quarter in (1, 2, 3, 4) and (d.month - 1) // 3 + 1 != quarter:
+                        warnings.append(f'Record date falls outside reporting period {period}')
+                except ValueError:
+                    warnings.append(f'Could not validate reporting period: {period}')
+            source = row.get('source', '')
+            department = row.get('department', '')
+            notes = row.get('notes', '')
+            desc = [f"General ESG import — {row.get('category', '')}"]
+            if source: desc.append(f'Source: {source}')
+            if department: desc.append(f'Department: {department}')
+            if notes: desc.append(f'Notes: {notes}')
+            if warnings: desc.append('Validation: ' + '; '.join(warnings))
+            desc.append(f'Reported emissions: {reported} kg CO2e')
+            unit = row.get('activity_unit', 'unit')[:32]
+            results.append({
+                'row_ref': f'row_{i}', 'raw': dict(raw_row), 'category': category,
+                'activity_value': amount, 'activity_unit': unit,
+                'original_value': amount, 'original_unit': unit,
+                'period_start': d, 'period_end': d,
+                'facility': row.get('facility', ''),
+                'country_code': config.get('default_country', ''),
+                'currency': '', 'supplier': source, 'description': ' | '.join(desc),
+                'reported_emissions_kg_co2e': reported,
+                'validation_warnings': warnings,
+            })
+        except Exception as exc:
+            errors.append({'row': i, 'error': str(exc), 'raw': dict(raw_row)})
+    return results, errors

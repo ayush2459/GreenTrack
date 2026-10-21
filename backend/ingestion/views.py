@@ -4,8 +4,8 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser
 from records.models import DataSource, IngestionRun, RawRecord, EmissionRecord, AuditEvent
-from .parsers import parse_sap_flat_file, parse_utility_csv, parse_travel_csv
-PARSER_MAP={'SAP_FLAT_FILE':parse_sap_flat_file,'UTILITY_CSV':parse_utility_csv,'TRAVEL_CSV':parse_travel_csv}
+from .parsers import parse_sap_flat_file, parse_utility_csv, parse_travel_csv, parse_general_esg_csv
+PARSER_MAP={'SAP_FLAT_FILE':parse_sap_flat_file,'UTILITY_CSV':parse_utility_csv,'TRAVEL_CSV':parse_travel_csv,'GENERAL_ESG_CSV':parse_general_esg_csv}
 def get_user_org(request):
     try:return request.user.profile.organization
     except Exception:return None
@@ -32,12 +32,20 @@ class IngestView(APIView):
         parser_fn=PARSER_MAP.get(source.source_type)
         if not parser_fn:
             run.status='FAILED';run.notes=f'No parser for {source.source_type}';run.finished_at=timezone.now();run.save();return Response({'error':run.notes},status=400)
+        file_obj.seek(0)
         results,errors=parser_fn(file_obj.read(),config=source.config);created=0
         for item in results:
             raw=RawRecord.objects.create(ingestion_run=run,source_row_ref=item.get('row_ref',''),raw_data=item.get('raw',{}))
-            rec=EmissionRecord.objects.create(organization=org,raw_record=raw,category=item['category'],activity_value=item['activity_value'],activity_unit=item['activity_unit'],original_value=item['original_value'],original_unit=item['original_unit'],period_start=item['period_start'],period_end=item['period_end'],facility=item.get('facility',''),country_code=item.get('country_code',''),currency=item.get('currency',''),supplier=item.get('supplier',''),description=item.get('description',''),status='PENDING')
+            rec=EmissionRecord.objects.create(organization=org,raw_record=raw,category=item['category'],activity_value=item['activity_value'],activity_unit=item['activity_unit'],original_value=item['original_value'],original_unit=item['original_unit'],period_start=item['period_start'],period_end=item['period_end'],facility=item.get('facility',''),country_code=item.get('country_code',''),currency=item.get('currency',''),supplier=item.get('supplier',''),description=item.get('description',''),reported_emissions_kg_co2e=item.get('reported_emissions_kg_co2e'),status='FLAGGED' if item.get('validation_warnings') else 'PENDING',flag_reason='; '.join(item.get('validation_warnings', [])))
             auto_flag(rec,org);AuditEvent.objects.create(organization=org,event_type='RECORD_CREATED',actor=request.user,target_id=rec.id,target_type='EmissionRecord',payload={'source':source.name});created+=1
         for e in errors:RawRecord.objects.create(ingestion_run=run,source_row_ref=f"row_{e.get('row','')}",raw_data=e.get('raw',{}),parse_error=e.get('error',''))
-        run.status='DONE';run.row_count=created;run.error_count=len(errors);run.finished_at=timezone.now();run.notes=f'Ingested {created} records. {len(errors)} errors.';run.save()
+        run.status = 'FAILED' if created == 0 else 'DONE'
+        run.row_count = created
+        run.error_count = len(errors)
+        run.finished_at = timezone.now()
+        run.notes = f'Ingested {created} records. {len(errors)} errors.'
+        if created == 0:
+            run.notes += ' No records created; check file format and column headers.'
+        run.save()
         AuditEvent.objects.create(organization=org,event_type='INGESTION_DONE',actor=request.user,target_id=run.id,target_type='IngestionRun',payload={'created':created,'errors':len(errors)})
-        return Response({'run_id':str(run.id),'created':created,'errors':len(errors),'status':'DONE','error_details':errors[:10]})
+        return Response({'run_id':str(run.id),'created':created,'errors':len(errors),'status':run.status,'notes':run.notes,'error_details':errors[:10]})

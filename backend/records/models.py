@@ -17,7 +17,7 @@ class UserProfile(models.Model):
     def __str__(self): return f"{self.user.username} - {self.organization}"
 
 class DataSource(models.Model):
-    SOURCE_TYPES = [('SAP_FLAT_FILE','SAP Flat File'),('UTILITY_CSV','Utility Portal CSV'),('TRAVEL_CSV','Corporate Travel CSV')]
+    SOURCE_TYPES = [('SAP_FLAT_FILE','SAP Flat File'),('UTILITY_CSV','Utility Portal CSV'),('TRAVEL_CSV','Corporate Travel CSV'),('GENERAL_ESG_CSV','General ESG CSV')]
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     organization = models.ForeignKey(Organization, on_delete=models.PROTECT, related_name='data_sources')
     source_type = models.CharField(max_length=32, choices=SOURCE_TYPES)
@@ -53,8 +53,8 @@ class RawRecord(models.Model):
 class EmissionRecord(models.Model):
     SCOPE_CHOICES = [(1,'Scope 1'),(2,'Scope 2'),(3,'Scope 3')]
     STATUS_CHOICES = [('PENDING','Pending Review'),('APPROVED','Approved'),('REJECTED','Rejected'),('FLAGGED','Flagged'),('LOCKED','Locked for Audit')]
-    CATEGORY_CHOICES = [('FUEL_STATIONARY','Fuel — Stationary Combustion'),('FUEL_MOBILE','Fuel — Mobile Combustion'),('ELECTRICITY','Purchased Electricity'),('HEAT_STEAM','Purchased Heat/Steam'),('BUSINESS_TRAVEL','Business Travel'),('PROCUREMENT','Purchased Goods & Services'),('FREIGHT','Upstream Transportation')]
-    SCOPE_MAP = {'FUEL_STATIONARY':1,'FUEL_MOBILE':1,'ELECTRICITY':2,'HEAT_STEAM':2,'BUSINESS_TRAVEL':3,'PROCUREMENT':3,'FREIGHT':3}
+    CATEGORY_CHOICES = [('FUEL_STATIONARY','Fuel — Stationary Combustion'),('FUEL_MOBILE','Fuel — Mobile Combustion'),('ELECTRICITY','Purchased Electricity'),('HEAT_STEAM','Purchased Heat/Steam'),('BUSINESS_TRAVEL','Business Travel'),('PROCUREMENT','Purchased Goods & Services'),('FREIGHT','Upstream Transportation'),('REFRIGERANT_LEAKAGE','Refrigerant Leakage')]
+    SCOPE_MAP = {'FUEL_STATIONARY':1,'FUEL_MOBILE':1,'REFRIGERANT_LEAKAGE':1,'ELECTRICITY':2,'HEAT_STEAM':2,'BUSINESS_TRAVEL':3,'PROCUREMENT':3,'FREIGHT':3}
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     organization = models.ForeignKey(Organization, on_delete=models.PROTECT, related_name='emission_records')
     raw_record = models.ForeignKey(RawRecord, on_delete=models.PROTECT, null=True, related_name='emission_records')
@@ -72,6 +72,7 @@ class EmissionRecord(models.Model):
     currency = models.CharField(max_length=3, blank=True)
     supplier = models.CharField(max_length=255, blank=True)
     description = models.TextField(blank=True)
+    reported_emissions_kg_co2e = models.DecimalField(max_digits=20, decimal_places=6, null=True, blank=True)
     status = models.CharField(max_length=16, choices=STATUS_CHOICES, default='PENDING')
     flag_reason = models.TextField(blank=True)
     is_manually_edited = models.BooleanField(default=False)
